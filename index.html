@@ -1,0 +1,195 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Cursos Fysa</title>
+  <!-- Bootstrap + DataTables -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.2/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.8/css/dataTables.bootstrap4.min.css">
+  <style>
+    body { padding: 15px; font-family: Arial, sans-serif; background:#f7f7f7; }
+    h1 { font-size: 1.6rem; margin-bottom:20px; }
+    .dataTables_wrapper .dataTables_paginate .paginate_button { padding: 0.1em 0.6em; }
+    td.details-control{ cursor:pointer; color:#007bff; font-weight:bold; }
+    tr.accordion-row{ background:#fafafa; font-style:italic; display:none; }
+  </style>
+</head>
+<body>
+<h1>📊 Cursos Fysa</h1>
+
+<!-- Controles -->
+<div class="mb-2">
+  <input type="file" id="csvFile" accept=".csv">
+</div>
+
+<div class="mb-2">
+  Desde: <input type="datetime-local" id="fromDate">
+  Hasta: <input type="datetime-local" id="toDate">
+  Dispositivo contiene: <input type="text" id="deviceFilter" size="10">
+  Dominio contiene: <input type="text" id="domainFilter" size="10">
+  Zona horaria (compensar, h): <input type="number" id="tzOffset" style="width:60px" value="0">
+  <button class="btn btn-sm btn-primary" id="applyFilters">Filtrar</button>
+</div>
+
+<div class="mb-2">
+  Modo descripción:
+  <select id="descMode" class="mr-3">
+    <option value="basic" selected>Básico</option>
+    <option value="context">Contextual</option>
+  </select>
+  Mostrar
+  <select id="pageLength">
+    <option>50</option><option>100</option><option>300</option><option selected>500</option><option>1000</option>
+  </select>
+  entradas por página
+</div>
+
+<table id="logTable" class="table table-striped table-bordered">
+  <thead>
+    <tr>
+      <th></th>
+      <th>Fecha/Hora (local)</th>
+      <th>Dominio</th>
+      <th>Dispositivo</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<!-- JS -->
+<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.8/js/dataTables.bootstrap4.min.js"></script>
+
+<script>
+let rawLogs = [];
+let dataTable = null;
+
+function domainDescBasic(domain){
+  domain = domain.toLowerCase();
+  const map = {
+    "google":"Búsquedas y servicios de Google",
+    "youtube":"Plataforma de vídeos YouTube",
+    "tiktok":"Recursos/uso de TikTok",
+    "facebook":"Red social Facebook",
+    "apple":"Servicios Apple / iCloud",
+    "amazon":"Servicios Amazon"
+  };
+  for(const key in map){ if(domain.includes(key)) return map[key]; }
+  return "Sitio web general";
+}
+
+function domainDescContext(idx){
+  const log = rawLogs[idx];
+  const prev = rawLogs[idx-1]?.domain?.toLowerCase() || "";
+  const next = rawLogs[idx+1]?.domain?.toLowerCase() || "";
+  if((prev+next).includes("tiktok")) return "Accedido a través de TikTok";
+  if((prev+next).includes("google")) return "Posible resultado desde Google";
+  return domainDescBasic(log.domain);
+}
+
+function buildTable(){
+  if(dataTable){ dataTable.destroy(); $('#logTable tbody').empty(); }
+  const pageLen = parseInt($('#pageLength').val());
+
+  rawLogs.forEach((log,i)=>{
+    $('#logTable tbody').append(`
+      <tr data-idx="${i}">
+        <td class="details-control">+</td>
+        <td>${log.local}</td>
+        <td>${log.domain}</td>
+        <td>${log.device}</td>
+      </tr>
+      <tr class="accordion-row"><td colspan="4">${log.desc}</td></tr>
+    `);
+  });
+
+  dataTable = $('#logTable').DataTable({
+    pageLength: pageLen,
+    lengthChange:false,
+    ordering:false,
+    info:true
+  });
+}
+
+function refreshDescriptions(){
+  const mode = $('#descMode').val();
+  $('#logTable tbody tr').each(function(){
+    const tr = $(this);
+    if(tr.hasClass('accordion-row')) return;
+    const idx = parseInt(tr.attr('data-idx'));
+    const desc = mode==="context" ? domainDescContext(idx) : domainDescBasic(rawLogs[idx].domain);
+    tr.next('.accordion-row').find('td').html(desc);
+  });
+}
+
+$('#descMode').on('change', refreshDescriptions);
+$('#pageLength').on('change', buildTable);
+
+$('#logTable tbody').on('click','td.details-control',function(){
+  const tr = $(this).closest('tr');
+  const icon = $(this);
+  tr.next('.accordion-row').toggle();
+  icon.text(icon.text()==='+'?'-':'+');
+});
+
+$('#applyFilters').on('click', ()=>{
+  const f = $('#fromDate').val()? new Date($('#fromDate').val()) : null;
+  const t = $('#toDate').val()? new Date($('#toDate').val()) : null;
+  const dev = $('#deviceFilter').val().toLowerCase();
+  const dom = $('#domainFilter').val().toLowerCase();
+  const offset = parseInt($('#tzOffset').val())||0;
+
+  rawLogs.forEach(l=>{
+    l.local = new Date(l.ts.getTime()+offset*3600000).toLocaleString();
+  });
+
+  let filtered = rawLogs.filter(l=>{
+    if(f && l.ts < f) return false;
+    if(t && l.ts > t) return false;
+    if(dev && !l.device.toLowerCase().includes(dev)) return false;
+    if(dom && !l.domain.toLowerCase().includes(dom)) return false;
+    return true;
+  });
+
+  // Reindex
+  filtered.forEach((l,i)=>l.idx=i);
+  // rebuild desc for filtered
+  const mode = $('#descMode').val();
+  filtered.forEach((l,i)=>{
+    l.desc = mode==="context"? domainDescContext(i):domainDescBasic(l.domain);
+  });
+  rawLogs = filtered;
+  buildTable();
+});
+
+$('#csvFile').on('change', function(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  Papa.parse(file,{
+    header:true,
+    skipEmptyLines:true,
+    worker:true,
+    complete: function(results){
+      const offset = parseInt($('#tzOffset').val())||0;
+      rawLogs = results.data.map((r,i)=>({
+        ts: new Date(r.timestamp || r.time || r.date),
+        domain: (r.root_domain||r.domain||"").trim(),
+        device: (r.device_name||r.device_model||"").trim(),
+        local: "", // se calculará
+        desc: ""   // se calculará
+      }));
+      // calcular local y desc
+      rawLogs.forEach((l,i)=>{
+        l.local = new Date(l.ts.getTime()+offset*3600000).toLocaleString();
+        l.desc  = domainDescBasic(l.domain);
+      });
+      buildTable();
+    }
+  });
+});
+</script>
+</body>
+</html>
